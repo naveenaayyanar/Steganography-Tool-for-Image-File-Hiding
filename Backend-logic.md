@@ -1,169 +1,140 @@
-**Backend Architecture Overview**
+**Backend Logic Breakdown**
 
-1. **Framework**: Flask
-   - A lightweight web framework for Python that allows for easy routing and handling of web requests.
-
-2. **Libraries**:
-   - **Pillow**: For image processing (opening, modifying, and saving images).
-   - **NumPy**: For efficient array manipulation (optional, but useful for pixel data).
-   - **os**: For file handling and directory management.
-
-3. **File Structure**:
-   ```
-   /steg-app
-     /static
-       style.css
-       script.js
-     /templates
-       index.html
-       result.html
-     /uploads
-     app.py
-   ```
-
- **Detailed Components of the Backend**
-
- **1. Setting Up Flask**
-
-- **Installation**:
-  ```bash
-  pip install flask pillow numpy
-  ```
-
-- **Basic Flask App Structure**:
-  In `app.py`, set up the basic Flask application:
+ **1. Flask Application Setup**
+- **Purpose**: Initialize the Flask application and configure settings.
+- **Implementation**:
   ```python
-  from flask import Flask, render_template, request, send_file
   import os
+  import io
+  import secrets
+  from flask import Flask, render_template, request, send_file, redirect, url_for, flash
+  from PIL import Image
+  from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
   app = Flask(__name__)
-  app.config['UPLOAD_FOLDER'] = 'uploads'
+  app.secret_key = secrets.token_hex(16)  # Generate a random secret key for session management
+  UPLOAD_FOLDER = "uploads"  # Directory to store uploaded images
+  os.makedirs(UPLOAD_FOLDER, exist_ok=True)  # Create the uploads directory if it doesn't exist
   ```
 
- **2. Handling File Uploads**
-
-- **File Upload Route**:
-  Create a route to handle image uploads for encoding and decoding:
+ **2. Message Encoding and Decoding Functions**
+- **Purpose**: Convert messages to bits and back to bytes for embedding in images.
+- **Implementation**:
   ```python
-  @app.route('/encode', methods=['POST'])
-  def encode():
-      image = request.files['image']
-      message = request.form['message']
-      image.save(os.path.join(app.config['UPLOAD_FOLDER'], image.filename))
-       Call encoding function here
-      return send_file(encoded_image_path, as_attachment=True)
-  ```
+  def message_to_bits(message_bytes):
+      return ''.join(format(b, '08b') for b in message_bytes)
 
-- **File Validation**:
-  Ensure that only image files are uploaded:
-  ```python
-  if not image.filename.endswith('.png'):
-      return "Only PNG files are allowed", 400
-  ```
-
- **3. Implementing Steganography Logic**
-
-- **Encoding Function**:
-  This function modifies the least significant bits of the image pixels to embed the message.
-  ```python
-  def encode_image(input_path, message, output_path):
-      img = Image.open(input_path)
-      pixels = np.array(img)
-      binary_msg = ''.join(format(ord(c), '08b') for c in message) + '00000000'   Null terminator
-      msg_index = 0
-
-      for row in pixels:
-          for pixel in row:
-              for channel in range(3):   R, G, B
-                  if msg_index < len(binary_msg):
-                      pixel[channel] = (pixel[channel] & 0xFE) | int(binary_msg[msg_index])
-                      msg_index += 1
-      Image.fromarray(pixels).save(output_path)
-  ```
-
-- **Decoding Function**:
-  This function extracts the message from the least significant bits of the image pixels.
-  ```python
-  def decode_image(input_path):
-      img = Image.open(input_path)
-      pixels = np.array(img)
-      binary = []
-
-      for row in pixels:
-          for pixel in row:
-              for channel in range(3):
-                  binary.append(str(pixel[channel] & 1))
-
-      message = ''
-      for i in range(0, len(binary), 8):
-          byte = ''.join(binary[i:i+8])
-          if byte == '00000000':   Stop at null terminator
+  def bits_to_bytes(bits):
+      bytes_ = bytearray()
+      for i in range(0, len(bits), 8):
+          byte = bits[i:i+8]
+          if len(byte) < 8:
               break
-          message += chr(int(byte, 2))
-      return message
+          bytes_.append(int(byte, 2))
+      return bytes(bytes_)
   ```
 
- **4. Routing for Decoding**
-
-- **Decoding Route**:
-  Create a route to handle image uploads for decoding:
+ **3. AES Encryption and Decryption**
+- **Purpose**: Encrypt and decrypt messages using AESGCM for added security.
+- **Implementation**:
   ```python
-  @app.route('/decode', methods=['POST'])
-  def decode():
-      image = request.files['image']
-      image.save(os.path.join(app.config['UPLOAD_FOLDER'], image.filename))
-      message = decode_image(os.path.join(app.config['UPLOAD_FOLDER'], image.filename))
-      return render_template('result.html', message=message)
+  def aes_encrypt(key: bytes, data: bytes):
+      aesgcm = AESGCM(key.ljust(32, b'\0')[:32])  # Ensure the key is 32 bytes
+      nonce = secrets.token_bytes(12)  # Generate a random nonce
+      ct = aesgcm.encrypt(nonce, data, None)  # Encrypt the data
+      return nonce + ct  # Return nonce + ciphertext
+
+  def aes_decrypt(key: bytes, data: bytes):
+      aesgcm = AESGCM(key.ljust(32, b'\0')[:32])
+      nonce = data[:12]  # Extract the nonce
+      ct = data[12:]  # Extract the ciphertext
+      return aesgcm.decrypt(nonce, ct, None)  # Decrypt the data
   ```
 
- **5. Rendering HTML Templates**
-
-- **Home Page**:
-  Create a simple HTML form for users to upload images and enter messages.
-  ```html
-  <form action="/encode" method="post" enctype="multipart/form-data">
-      <input type="file" name="image" accept=".png" required>
-      <textarea name="message" placeholder="Enter your secret message"></textarea>
-      <button type="submit">Hide Message</button>
-  </form>
+ **4. Embedding Messages in Images**
+- **Purpose**: Embed the encrypted message into the image's pixel data.
+- **Implementation**:
+  ```python
+  def embed_message_in_image(image: Image.Image, message_bytes: bytes):
+      message_bytes += DELIMITER  # Append a delimiter to the message
+      bits = message_to_bits(message_bytes)  # Convert message to bits
+      pixels = list(image.getdata())  # Get pixel data from the image
+      max_bits = len(pixels) * 4  # Calculate maximum bits that can be embedded
+      if len(bits) > max_bits:
+          return None  # Return None if the message is too large
+      new_pixels = []
+      bit_idx = 0
+      for pixel in pixels:
+          r, g, b, a = pixel
+          new_pixel = []
+          for color in (r, g, b, a):
+              if bit_idx < len(bits):
+                  new_color = (color & 0xFE) | int(bits[bit_idx])  # Embed bit into the color
+                  bit_idx += 1
+              else:
+                  new_color = color
+              new_pixel.append(new_color)
+          new_pixels.append(tuple(new_pixel))
+      new_img = Image.new(image.mode, image.size)
+      new_img.putdata(new_pixels)  # Create a new image with modified pixels
+      return new_img
   ```
 
-- **Result Page**:
-  Display the extracted message after decoding.
-  ```html
-  <h2>Extracted Message:</h2>
-  <p>{{ message }}</p>
+ **5. Extracting Messages from Images**
+- **Purpose**: Retrieve the embedded message from the image's pixel data.
+- **Implementation**:
+  ```python
+  def extract_message_from_image(image: Image.Image):
+      pixels = list(image.getdata())
+      bits = ""
+      for pixel in pixels:
+          for color in pixel[:4]:  # Only consider the first four channels (RGBA)
+              bits += str(color & 1)  # Extract the least significant bit
+      delimiter_bits = message_to_bits(DELIMITER)
+      idx = bits.find(delimiter_bits)  # Find the delimiter in the bits
+      if idx == -1:
+          return None  # Return None if delimiter is not found
+      message_bits = bits[:idx]  # Extract the message bits
+      return bits_to_bytes(message_bits)  # Convert bits back to bytes
   ```
 
- **6. Running the Application**
+ **6. Routes for Embedding and Extracting Messages**
+- **Purpose**: Define the web routes for embedding and extracting messages.
+- **Implementation**:
+  ```python
+  @app.route('/embed', methods=['GET', 'POST'])
+  def embed():
+      if request.method == 'POST':
+          imgfile = request.files.get('image')
+          message = request.form.get('message_text', '')
+          password = request.form.get('password', '')
+          # Validate inputs and handle errors
+          # Process the image and embed the message
+          # Return the encoded image as a downloadable file
+      return render_template('embed.html')
 
-- **Start the Flask Server**:
-  Run the application using:
-  ```bash
-  export FLASK_APP=app.py
-  flask run
+  @app.route('/extract', methods=['GET', 'POST'])
+  def extract():
+      extracted_message = None
+      if request.method == 'POST':
+          imgfile = request.files.get('image')
+          password = request.form.get('password', '')
+          # Validate inputs and handle errors
+          # Process the image and extract the message
+          # Return the extracted message to the user
+      return render_template('extract.html', extracted_message=extracted_message)
   ```
 
-- **Access the Application**:
-  Open a web browser and navigate to `http://127.0.0.1:5000` to interact with your steganography tool.
+ **7. Flash Messages for User Feedback**
+- **Purpose**: Provide feedback to users about the success or failure of their actions.
+- **Implementation**:
+  ```python
+  from flask import flash, redirect, url_for
 
- **Security and Enhancements**
+  # Use flash messages to inform users about errors or success
+  flash("Please select an image file.", 'error')
+  return redirect(url_for('embed'))
+  ```
 
-1. **File Type Validation**:
-   - Ensure only valid image formats (e.g., PNG) are accepted to prevent errors.
-
-2. **Input Sanitization**:
-   - Sanitize user inputs to prevent XSS attacks or other vulnerabilities.
-
-3. **Error Handling**:
-   - Implement error handling for file uploads and processing to provide user-friendly feedback.
-
-4. **Future Enhancements**:
-   - Consider adding encryption for messages before embedding them.
-   - Implement user authentication for added security.
-   - Allow batch processing of images or support for different image formats.
-
- **Conclusion**
-
-This detailed backend implementation provides a robust framework for your steganography web application using Flask and Python.
-It covers file handling, image processing, and user interaction, ensuring a seamless experience for users to hide and extract messages from images.
+**Conclusion**
+The backend logic in your `app.py` file is structured to handle the core functionalities of your steganography web application. It includes image processing, message embedding and extraction, encryption and decryption, and user feedback mechanisms. This setup allows users to securely embed messages into images and extract them as needed.
