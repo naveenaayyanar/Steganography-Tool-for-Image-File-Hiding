@@ -59,19 +59,6 @@ NaveenaCrypt is a web-based steganography tool that allows users to embed secret
    - Optionally, enter the password used for encryption.
    - Click "Extract" to retrieve the hidden message.
 
-## Directory Structure
-```
-.
-├── app.py                # Main application file
-├── requirements.txt      # Python dependencies
-├── templates             # HTML templates for the web interface
-│   ├── embed.html
-│   ├── extract.html
-│   ├── home.html
-│   └── password.html
-└── uploads               # Directory for uploaded images
-```
-
 ## Contributing
 Contributions are welcome! If you have suggestions or improvements, please feel free to submit a pull request or open an issue.
 
