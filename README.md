@@ -67,4 +67,3 @@ Contributions are welcome! If you have suggestions or improvements, please feel 
 - [Flask Documentation](https://flask.palletsprojects.com/)
 - [Pillow Documentation](https://pillow.readthedocs.io/en/stable/)
 - [Cryptography Documentation](https://cryptography.io/en/latest/)
-```
